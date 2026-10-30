@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>同词相遇 WebRTC联机版</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        body {
+            background: #f0f4ff;
+            padding: 16px;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .box {
+            background: #fff;
+            border-radius: 14px;
+            padding: 20px;
+            box-shadow: 0 4px 16px #00000014;
+            margin-bottom: 16px;
+        }
+        h2 {
+            color: #2c3e50;
+            margin-bottom:16px;
+            font-size:20px;
+        }
+        input {
+            width:100%;
+            padding:12px;
+            border:1px solid #d6dce8;
+            border-radius:8px;
+            font-size:16px;
+            margin:8px 0 12px;
+        }
+        button {
+            width:100%;
+            padding:13px;
+            border:none;
+            border-radius:10px;
+            background:#406bff;
+            color:white;
+            font-size:16px;
+            cursor:pointer;
+            margin:6px 0;
+        }
+        button:active{
+            background:#2c54dd;
+        }
+        .key-row{
+            display:flex;
+            gap:8px;
+        }
+        #keyBox{
+            flex-grow:1;
+        }
+        .copy-btn{
+            width:auto;
+            white-space:nowrap;
+        }
+        .tip{
+            color:#556;
+            font-size:14px;
+            margin-top:8px;
+        }
+        #status{
+            color:#239b46;
+            font-weight:500;
+        }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>同词相遇 联机游戏</h2>
+        <div id="createArea">
+            <button id="createBtn">创建连接</button>
+            <div id="keyWrap" style="display:none;">
+                <p>你的连接密钥：</p>
+                <div class="key-row">
+                    <input id="keyBox" readonly>
+                    <button class="copy-btn" id="copyBtn">一键复制密钥</button>
+                </div>
+                <p class="tip">把密钥发给好友，让对方填入加入连接</p>
+            </div>
+        </div>
+
+        <div style="margin-top:20px">
+            <p>输入好友密钥加入游戏</p>
+            <input id="joinKey" placeholder="粘贴/输入好友密钥">
+            <button id="joinBtn">加入连接</button>
+        </div>
+        <p id="status"></p>
+    </div>
+
+    <div class="box" id="gameArea" style="display:none;">
+        <h2>游戏对局</h2>
+        <p>等待双方输入词语...</p>
+        <input id="wordInput" placeholder="输入你的词语">
+        <button id="sendWord">提交词语</button>
+        <p id="resultText"></p>
+    </div>
+
+<script>
+// 一键复制功能
+const copyBtn = document.getElementById('copyBtn');
+const keyBox = document.getElementById('keyBox');
+copyBtn.addEventListener('click', async ()=>{
+    try{
+        await navigator.clipboard.writeText(keyBox.value);
+        alert("✅密钥复制成功！发给你的好友");
+    }catch(err){
+        // iOS safari剪贴板备用方案
+        keyBox.select();
+        alert("自动复制失败！请手动长按复制输入框里密钥");
+    }
+})
+
+// --- WebRTC 核心逻辑 ---
+const createBtn = document.getElementById('createBtn');
+const joinBtn = document.getElementById('joinBtn');
+const keyWrap = document.getElementById('keyWrap');
+const status = document.getElementById('status');
+const joinKey = document.getElementById('joinKey');
+const gameArea = document.getElementById('gameArea');
+const wordInput = document.getElementById('wordInput');
+const sendWord = document.getElementById('sendWord');
+const resultText = document.getElementById('resultText');
+
+let peerConnection;
+let dataChannel;
+let remoteWord = null;
+let localWord = null;
+const iceServer = {iceServers: [{urls:'stun:stun.l.google.com:19302'}]};
+
+// 创建房间（发起方）
+createBtn.onclick = async ()=>{
+    peerConnection = new RTCPeerConnection(iceServer);
+    dataChannel = peerConnection.createDataChannel("game");
+    bindDataChannel();
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    peerConnection.onicecandidate = e=>{
+        if(!e.candidate){
+            keyBox.value = btoa(JSON.stringify(peerConnection.localDescription));
+            keyWrap.style.display="block";
+            status.innerText="密钥已生成，等待好友加入";
+        }
+    }
+}
+
+// 加入房间（接收方）
+joinBtn.onclick = async ()=>{
+    const keyText = joinKey.value.trim();
+    if(!keyText) return alert("请输入密钥");
+    const remoteOffer = JSON.parse(atob(keyText));
+    peerConnection = new RTCPeerConnection(iceServer);
+    peerConnection.ondatachannel = e=>{
+        dataChannel = e.channel;
+        bindDataChannel();
+    }
+    await peerConnection.setRemoteDescription(remoteOffer);
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    peerConnection.onicecandidate = e=>{
+        if(!e.candidate) status.innerText="已发送应答，等待连通";
+    }
+}
+
+// 绑定消息通道
+function bindDataChannel(){
+    dataChannel.onopen = ()=>{
+        status.innerText="✅连接成功！可以开始游戏";
+        gameArea.style.display="block";
+    }
+    dataChannel.onmessage = e=>{
+        remoteWord = e.data;
+        checkWord();
+    }
+}
+
+//提交词语
+sendWord.onclick = ()=>{
+    const w = wordInput.value.trim();
+    if(!w) return alert("请输入词语");
+    localWord = w;
+    dataChannel.send(w);
+    checkWord();
+}
+
+function checkWord(){
+    if(localWord && remoteWord){
+        if(localWord === remoteWord){
+            resultText.innerText🎉成功！你们想到了同一个词："+localWord";
+        }else{
+            resultText.innerText=`你写：${localWord}，对方写：${remoteWord}，不一样，再来一次！`;
+        }
+        localWord=null;remoteWord=null;
+    }
+}
+</script>
+</body>
+</html>
